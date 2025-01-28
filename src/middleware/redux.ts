@@ -1,26 +1,29 @@
-import { GetState, SetState, State, StoreApi } from '../vanilla'
-import { NamedSet } from './devtools'
+import type { StateCreator, StoreMutatorIdentifier } from '../vanilla.ts'
+import type { NamedSet } from './devtools.ts'
 
-type DevtoolsType = {
-  prefix: string
-  subscribe: (dispatch: any) => () => void
-  unsubscribe: () => void
-  send: (action: string, state: any) => void
-  init: (state: any) => void
-  error: (payload: any) => void
-}
+type Write<T, U> = Omit<T, keyof U> & U
 
-/**
- * @deprecated Use `Mutate<StoreApi<T & { dispatch: (a: A) => A }>, [["zustand/redux", A]]>`.
- * See tests/middlewaresTypes.test.tsx for usage with multiple middlewares.
- */
-export type StoreApiWithRedux<
-  T extends State,
-  A extends { type: unknown }
-> = StoreApi<T & { dispatch: (a: A) => A }> & {
+type Action = { type: string }
+
+type StoreRedux<A> = {
   dispatch: (a: A) => A
-  dispatchFromDevtools: boolean
+  dispatchFromDevtools: true
 }
+
+type ReduxState<A> = {
+  dispatch: StoreRedux<A>['dispatch']
+}
+
+type WithRedux<S, A> = Write<S, StoreRedux<A>>
+
+type Redux = <
+  T,
+  A extends Action,
+  Cms extends [StoreMutatorIdentifier, unknown][] = [],
+>(
+  reducer: (state: T, action: A) => T,
+  initialState: T,
+) => StateCreator<Write<T, ReduxState<A>>, Cms, [['zustand/redux', A]]>
 
 declare module '../vanilla' {
   interface StoreMutators<S, A> {
@@ -28,35 +31,20 @@ declare module '../vanilla' {
   }
 }
 
-interface StoreRedux<A extends Action> {
-  dispatch: (a: A) => A
-  dispatchFromDevtools: true
-}
+type ReduxImpl = <T, A extends Action>(
+  reducer: (state: T, action: A) => T,
+  initialState: T,
+) => StateCreator<T & ReduxState<A>, [], []>
 
-interface Action {
-  type: unknown
-}
-
-type Write<T extends object, U extends object> = Omit<T, keyof U> & U
-type Cast<T, U> = T extends U ? T : U
-
-type WithRedux<S, A> = Write<Cast<S, object>, StoreRedux<Cast<A, Action>>>
-
-export const redux =
-  <S extends State, A extends { type: unknown }>(
-    reducer: (state: S, action: A) => S,
-    initial: S
-  ) =>
-  (
-    set: SetState<S & { dispatch: (a: A) => A }>,
-    get: GetState<S & { dispatch: (a: A) => A }>,
-    api: StoreApiWithRedux<S, A> & { devtools?: DevtoolsType }
-  ): S & { dispatch: (a: A) => A } => {
-    api.dispatch = (action: A) => {
-      ;(set as NamedSet<S>)((state: S) => reducer(state, action), false, action)
-      return action
-    }
-    api.dispatchFromDevtools = true
-
-    return { dispatch: (...a) => api.dispatch(...a), ...initial }
+const reduxImpl: ReduxImpl = (reducer, initial) => (set, _get, api) => {
+  type S = typeof initial
+  type A = Parameters<typeof reducer>[1]
+  ;(api as any).dispatch = (action: A) => {
+    ;(set as NamedSet<S>)((state: S) => reducer(state, action), false, action)
+    return action
   }
+  ;(api as any).dispatchFromDevtools = true
+
+  return { dispatch: (...a) => (api as any).dispatch(...a), ...initial }
+}
+export const redux = reduxImpl as unknown as Redux
