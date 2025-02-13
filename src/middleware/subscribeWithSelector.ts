@@ -1,14 +1,22 @@
-import {
-  EqualityChecker,
-  GetState,
-  SetState,
-  State,
-  StateListener,
-  StateSelector,
-  StateSliceListener,
-  StoreApi,
-  Subscribe,
-} from '../vanilla'
+import type { StateCreator, StoreMutatorIdentifier } from '../vanilla.ts'
+
+type SubscribeWithSelector = <
+  T,
+  Mps extends [StoreMutatorIdentifier, unknown][] = [],
+  Mcs extends [StoreMutatorIdentifier, unknown][] = [],
+>(
+  initializer: StateCreator<
+    T,
+    [...Mps, ['zustand/subscribeWithSelector', never]],
+    Mcs
+  >,
+) => StateCreator<T, Mps, [['zustand/subscribeWithSelector', never], ...Mcs]>
+
+type Write<T, U> = Omit<T, keyof U> & U
+
+type WithSelectorSubscribe<S> = S extends { getState: () => infer T }
+  ? Write<S, StoreSubscribeWithSelector<T>>
+  : never
 
 declare module '../vanilla' {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -17,11 +25,7 @@ declare module '../vanilla' {
   }
 }
 
-type WithSelectorSubscribe<S> = S extends { getState: () => infer T }
-  ? Omit<S, 'subscribe'> & StoreSubscribeWithSelector<Extract<T, State>>
-  : never
-
-interface StoreSubscribeWithSelector<T extends State> {
+type StoreSubscribeWithSelector<T> = {
   subscribe: {
     (listener: (selectedState: T, previousSelectedState: T) => void): () => void
     <U>(
@@ -30,50 +34,22 @@ interface StoreSubscribeWithSelector<T extends State> {
       options?: {
         equalityFn?: (a: U, b: U) => boolean
         fireImmediately?: boolean
-      }
+      },
     ): () => void
   }
 }
 
-/**
- * @deprecated Use `Mutate<StoreApi<T>, [["zustand/subscribeWithSelector", never]]>`.
- * See tests/middlewaresTypes.test.tsx for usage with multiple middlewares.
- */
-export type StoreApiWithSubscribeWithSelector<T extends State> = Omit<
-  StoreApi<T>,
-  'subscribe' // FIXME remove omit in v4
-> & {
-  subscribe: {
-    (listener: StateListener<T>): () => void
-    <StateSlice>(
-      selector: StateSelector<T, StateSlice>,
-      listener: StateSliceListener<StateSlice>,
-      options?: {
-        equalityFn?: EqualityChecker<StateSlice>
-        fireImmediately?: boolean
-      }
-    ): () => void
-  }
-}
+type SubscribeWithSelectorImpl = <T extends object>(
+  storeInitializer: StateCreator<T, [], []>,
+) => StateCreator<T, [], []>
 
-export const subscribeWithSelector =
-  <
-    S extends State,
-    CustomSetState extends SetState<S> = SetState<S>,
-    CustomGetState extends GetState<S> = GetState<S>,
-    CustomStoreApi extends StoreApi<S> = StoreApi<S>
-  >(
-    fn: (set: CustomSetState, get: CustomGetState, api: CustomStoreApi) => S
-  ) =>
-  (
-    set: CustomSetState,
-    get: CustomGetState,
-    api: Omit<CustomStoreApi, 'subscribe'> & // FIXME remove omit in v4
-      StoreApiWithSubscribeWithSelector<S>
-  ): S => {
-    const origSubscribe = api.subscribe as Subscribe<S>
+const subscribeWithSelectorImpl: SubscribeWithSelectorImpl =
+  (fn) => (set, get, api) => {
+    type S = ReturnType<typeof fn>
+    type Listener = (state: S, previousState: S) => void
+    const origSubscribe = api.subscribe as (listener: Listener) => () => void
     api.subscribe = ((selector: any, optListener: any, options: any) => {
-      let listener: StateListener<S> = selector // if no selector
+      let listener: Listener = selector // if no selector
       if (optListener) {
         const equalityFn = options?.equalityFn || Object.is
         let currentSlice = selector(api.getState())
@@ -90,10 +66,8 @@ export const subscribeWithSelector =
       }
       return origSubscribe(listener)
     }) as any
-    const initialState = fn(
-      set,
-      get,
-      api as CustomStoreApi // FIXME can remove in v4?
-    )
+    const initialState = fn(set, get, api)
     return initialState
   }
+export const subscribeWithSelector =
+  subscribeWithSelectorImpl as unknown as SubscribeWithSelector

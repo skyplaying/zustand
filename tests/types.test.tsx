@@ -1,20 +1,15 @@
-import create, {
-  Destroy,
-  EqualityChecker,
-  GetState,
-  PartialState,
-  SetState,
-  State,
+import { expect, it } from 'vitest'
+import { create } from 'zustand'
+import type {
   StateCreator,
-  StateListener,
-  StateSelector,
   StoreApi,
-  Subscribe,
+  StoreMutatorIdentifier,
   UseBoundStore,
 } from 'zustand'
+import { persist } from 'zustand/middleware'
 
 it('can use exposed types', () => {
-  interface ExampleState {
+  type ExampleState = {
     num: number
     numGet: () => number
     numGetState: () => number
@@ -22,23 +17,25 @@ it('can use exposed types', () => {
     numSetState: (v: number) => void
   }
 
-  const listener: StateListener<ExampleState> = (state) => {
+  const listener = (state: ExampleState) => {
     if (state) {
       const value = state.num * state.numGet() * state.numGetState()
       state.numSet(value)
       state.numSetState(value)
     }
   }
-  const selector: StateSelector<ExampleState, number> = (state) => state.num
-  const partial: PartialState<ExampleState, 'num' | 'numGet'> = {
+  const selector = (state: ExampleState) => state.num
+  const partial: Partial<ExampleState> = {
     num: 2,
     numGet: () => 2,
   }
-  const partialFn: PartialState<ExampleState, 'num' | 'numGet'> = (state) => ({
+  const partialFn: (state: ExampleState) => Partial<ExampleState> = (
+    state,
+  ) => ({
     ...state,
     num: 2,
   })
-  const equalityFn: EqualityChecker<ExampleState> = (state, newState) =>
+  const equalityFn = (state: ExampleState, newState: ExampleState) =>
     state !== newState
 
   const storeApi = create<ExampleState>((set, get) => ({
@@ -57,7 +54,7 @@ it('can use exposed types', () => {
       storeApi.setState({ num: v })
     },
   }))
-  const useStore = storeApi
+  const useBoundStore = storeApi
 
   const stateCreator: StateCreator<ExampleState> = (set, get) => ({
     num: 1,
@@ -72,18 +69,19 @@ it('can use exposed types', () => {
   })
 
   function checkAllTypes(
-    _getState: GetState<ExampleState>,
-    _partialState: PartialState<ExampleState, 'num' | 'numGet'>,
-    _setState: SetState<ExampleState>,
-    _state: State,
-    _stateListener: StateListener<ExampleState>,
-    _stateSelector: StateSelector<ExampleState, number>,
+    _getState: StoreApi<ExampleState>['getState'],
+    _partialState:
+      | Partial<ExampleState>
+      | ((s: ExampleState) => Partial<ExampleState>),
+    _setState: StoreApi<ExampleState>['setState'],
+    _state: object,
+    _stateListener: (state: ExampleState, previousState: ExampleState) => void,
+    _stateSelector: (state: ExampleState) => number,
     _storeApi: StoreApi<ExampleState>,
-    _subscribe: Subscribe<ExampleState>,
-    _destroy: Destroy,
-    _equalityFn: EqualityChecker<ExampleState>,
+    _subscribe: StoreApi<ExampleState>['subscribe'],
+    _equalityFn: (a: ExampleState, b: ExampleState) => boolean,
     _stateCreator: StateCreator<ExampleState>,
-    _useStore: UseBoundStore<ExampleState>
+    _useBoundStore: UseBoundStore<StoreApi<ExampleState>>,
   ) {
     expect(true).toBeTruthy()
   }
@@ -97,10 +95,9 @@ it('can use exposed types', () => {
     selector,
     storeApi,
     storeApi.subscribe,
-    storeApi.destroy,
     equalityFn,
     stateCreator,
-    useStore
+    useBoundStore,
   )
 })
 
@@ -122,13 +119,15 @@ it('should have correct (partial) types for setState', () => {
     c: () => set({ count: 1 }),
   }))
 
-  const setState: AssertEqual<typeof store.setState, SetState<Count>> = true
+  const setState: AssertEqual<
+    typeof store.setState,
+    StoreApi<Count>['setState']
+  > = true
   expect(setState).toEqual(true)
 
   // ok, should not error
   store.setState({ count: 1 })
   store.setState({})
-  store.setState(() => undefined)
   store.setState((previous) => previous)
 
   // @ts-expect-error type undefined is not assignable to type number
@@ -138,14 +137,20 @@ it('should have correct (partial) types for setState', () => {
 })
 
 it('should allow for different partial keys to be returnable from setState', () => {
-  type State = { count: number; something: string }
+  type State = {
+    count: number
+    something: string
+  }
 
   const store = create<State>(() => ({
     count: 0,
     something: 'foo',
   }))
 
-  const setState: AssertEqual<typeof store.setState, SetState<State>> = true
+  const setState: AssertEqual<
+    typeof store.setState,
+    StoreApi<State>['setState']
+  > = true
   expect(setState).toEqual(true)
 
   // ok, should not error
@@ -155,7 +160,7 @@ it('should allow for different partial keys to be returnable from setState', () 
     }
     return { count: 0 }
   })
-  store.setState<'count', 'something'>((previous) => {
+  store.setState((previous) => {
     if (previous.count === 0) {
       return { count: 1 }
     }
@@ -166,10 +171,78 @@ it('should allow for different partial keys to be returnable from setState', () 
   })
 
   // @ts-expect-error Type '{ something: boolean; count?: undefined; }' is not assignable to type 'State'.
-  store.setState<'count', 'something'>((previous) => {
+  store.setState((previous) => {
     if (previous.count === 0) {
       return { count: 1 }
     }
     return { something: true }
   })
+})
+
+it('state is covariant', () => {
+  const store = create<{ count: number; foo: string }>()(() => ({
+    count: 0,
+    foo: '',
+  }))
+
+  const _testIsCovariant: StoreApi<{ count: number }> = store
+
+  // @ts-expect-error should not compile
+  const _testIsNotContravariant: StoreApi<{
+    count: number
+    foo: string
+    baz: string
+  }> = store
+})
+
+it('StateCreator<T, [StoreMutatorIdentfier, unknown][]> is StateCreator<T, []>', () => {
+  interface State {
+    count: number
+    increment: () => void
+  }
+
+  const foo: <M extends [StoreMutatorIdentifier, unknown][]>() => StateCreator<
+    State,
+    M
+  > = () => (set, get) => ({
+    count: 0,
+    increment: () => {
+      set({ count: get().count + 1 })
+    },
+  })
+
+  create<State>()(persist(foo(), { name: 'prefix' }))
+})
+
+it('StateCreator subtyping', () => {
+  interface State {
+    count: number
+    increment: () => void
+  }
+
+  const foo: () => StateCreator<State, []> = () => (set, get) => ({
+    count: 0,
+    increment: () => {
+      set({ count: get().count + 1 })
+    },
+  })
+
+  create<State>()(persist(foo(), { name: 'prefix' }))
+
+  const _testSubtyping: StateCreator<State, [['zustand/persist', unknown]]> =
+    {} as StateCreator<State, []>
+})
+
+it('set state exists on store with readonly store', () => {
+  interface State {
+    count: number
+    increment: () => void
+  }
+
+  const useStore = create<State>()((set, get) => ({
+    count: 0,
+    increment: () => set({ count: get().count + 1 }),
+  }))
+
+  useStore.setState((state) => ({ ...state, count: state.count + 1 }))
 })
